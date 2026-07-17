@@ -3,14 +3,20 @@
 import streamlit as st
 import html as _html
 
-from src.db import log_prompt_response, save_spc, LOCAL_STORE
+from src.db import log_prompt_response, save_spc, LOCAL_STORE, create_participant
 from src.llm import build_spc, chat_spc, format_spc_for_display
+from src.tts import generate_speech
 
 st.title("Co-Design Workshop")
 st.write(
     "Use the SPC chatbot to co-create a Structured Product Concept (SPC). "
     "Chat with the assistant below; press Generate SPC when you're ready."
 )
+
+# Initialize participant code if not already set
+if "participant_code" not in st.session_state:
+    participant = create_participant()
+    st.session_state.participant_code = participant["participant_code"]
 
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = [
@@ -36,6 +42,16 @@ st.markdown(
 )
 
 st.subheader("SPC Chat")
+
+# Process chat input FIRST before rendering
+chat_text = st.chat_input("Type a message...")
+
+if chat_text and chat_text.strip():
+    st.session_state.chat_history.append({"role": "user", "message": chat_text.strip()})
+    assistant_reply = chat_spc(st.session_state.chat_history, spc=st.session_state.spc)
+    st.session_state.chat_history.append({"role": "assistant", "message": assistant_reply})
+
+# THEN render the chat history after processing
 chat_box = st.container()
 with chat_box:
     st.markdown('<div class="chat-container">', unsafe_allow_html=True)
@@ -50,15 +66,8 @@ with chat_box:
             st.markdown(f'<div class="row"><div class="bubble ai">{_esc(msg)}</div><div class="spacer"></div></div>', unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
-chat_text = st.chat_input("Type a message...")
-
 # Generate button outside the chat input
 generate = st.button("Generate SPC")
-
-if chat_text and chat_text.strip():
-    st.session_state.chat_history.append({"role": "user", "message": chat_text.strip()})
-    assistant_reply = chat_spc(st.session_state.chat_history, spc=st.session_state.spc)
-    st.session_state.chat_history.append({"role": "assistant", "message": assistant_reply})
 
 if generate:
     # Build a 'need' text from user messages in the chat
@@ -114,3 +123,25 @@ if st.session_state.spc:
     st.write(f"**Target user:** {spc.get('target_user', '')}")
     st.write(f"**Solution concept:** {spc.get('solution_concept', '')}")
     st.write(f"**Evidence:** {spc.get('evidence', '')}")
+
+    # Text-to-speech controls
+    st.markdown("---")
+    st.subheader("Listen to SPC")
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        tts_text = st.text_area(
+            "Text to read aloud",
+            value=format_spc_for_display(spc),
+            height=100,
+        )
+    with col2:
+        st.write("")
+        st.write("")
+        if st.button("🔊 Generate Audio"):
+            with st.spinner("Generating audio..."):
+                audio_bytes, error_msg = generate_speech(tts_text)
+                if audio_bytes:
+                    st.audio(audio_bytes, format="audio/wav")
+                    st.success("Audio generated successfully!")
+                else:
+                    st.error(error_msg or "Could not generate audio. Please check your configuration.")

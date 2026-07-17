@@ -17,6 +17,102 @@ try:
     import openai
 except ImportError:
     openai = None
+try:
+    import groq
+except ImportError:
+    groq = None
+
+
+def _extract_message_content(response: Any) -> str:
+    """Extract text content from Anthropic/OpenAI/Groq-style responses."""
+    if not response:
+        return ""
+
+    # Groq/OpenAI-style object with .choices[0].message.content
+    if hasattr(response, "choices"):
+        first_choice = response.choices[0] if getattr(response, "choices", None) else None
+        if first_choice is None:
+            return ""
+        message = getattr(first_choice, "message", None)
+        if message is not None:
+            content = getattr(message, "content", None)
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                pieces = []
+                for item in content:
+                    if isinstance(item, str):
+                        pieces.append(item)
+                    elif isinstance(item, dict):
+                        text = item.get("text") or item.get("content") or ""
+                        if isinstance(text, str):
+                            pieces.append(text)
+                    else:
+                        text = getattr(item, "text", None)
+                        if isinstance(text, str):
+                            pieces.append(text)
+                return "".join(pieces)
+            if isinstance(content, dict):
+                return content.get("text") or content.get("content") or ""
+            return str(content or "")
+        return getattr(first_choice, "text", "") or ""
+
+    # Anthropic-style response with .content[0].text
+    if hasattr(response, "content"):
+        content = getattr(response, "content", None)
+        if isinstance(content, list):
+            texts = []
+            for item in content:
+                if hasattr(item, "text"):
+                    texts.append(getattr(item, "text", ""))
+                elif isinstance(item, str):
+                    texts.append(item)
+            return "".join(texts)
+        return str(content or "")
+
+    return str(response or "")
+
+
+def _parse_json_payload(text: str) -> Dict[str, Any] | None:
+    """Extract and parse the first JSON object from a model response."""
+    if not text:
+        return None
+
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s*```$", "", cleaned, flags=re.IGNORECASE)
+
+    start = cleaned.find("{")
+    if start == -1:
+        return None
+
+    depth = 0
+    in_string = False
+    escaped = False
+    for idx in range(start, len(cleaned)):
+        char = cleaned[idx]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+        else:
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    candidate = cleaned[start:idx + 1]
+                    try:
+                        return json.loads(candidate)
+                    except json.JSONDecodeError:
+                        break
+    return None
 
 
 def build_spc(need: str, model: str | None = None) -> Dict[str, Any]:
@@ -42,9 +138,8 @@ def build_spc(need: str, model: str | None = None) -> Dict[str, Any]:
                 messages=[{"role": "user", "content": prompt}],
             )
             content = response.content[0].text if getattr(response, "content", None) else ""
-            match = re.search(r"\{.*\}", content, re.DOTALL)
-            if match:
-                payload = json.loads(match.group(0))
+            payload = _parse_json_payload(content)
+            if payload is not None:
                 payload.setdefault("components", [
                     payload.get("problem_statement", ""),
                     payload.get("target_user", ""),
@@ -58,33 +153,26 @@ def build_spc(need: str, model: str | None = None) -> Dict[str, Any]:
                 "Please check your Anthropic API key, model selection, and billing/credits."
             ) from exc
 
-    # Fallback to OpenAI only if Anthropic is not configured
-    if openai is not None and settings.OPENAI_API_KEY and not settings.ANTHROPIC_API_KEY:
+    # Fallback to Groq if configured
+    if groq is not None and settings.GROQ_API_KEY and not settings.ANTHROPIC_API_KEY:
         try:
-            client = openai.OpenAI(api_key=settings.OPENAI_API_KEY)
+            client = groq.Groq(api_key=settings.GROQ_API_KEY)
             prompt = (
                 "Convert this campus need into a structured product concept. "
-                "Return JSON with keys: need, problem_statement, target_user, "
-                "solution_concept, evidence, components."
+                "Return a single valid JSON object with keys: need, problem_statement, target_user, "
+                "solution_concept, evidence, components. Do not wrap it in markdown or add any extra text."
                 f"\nNeed: {need}"
             )
             messages = [{"role": "user", "content": prompt}]
             resp = client.chat.completions.create(
-                model=model or settings.OPENAI_MODEL,
+                model=model or settings.GROQ_MODEL,
                 messages=messages,
                 max_tokens=400,
                 temperature=0.2,
             )
-            content = ""
-            if getattr(resp, "choices", None):
-                first = resp.choices[0]
-                if hasattr(first, 'message'):
-                    content = first.message.get('content', '')
-                else:
-                    content = getattr(first, 'text', '')
-            match = re.search(r"\{.*\}", content, re.DOTALL)
-            if match:
-                payload = json.loads(match.group(0))
+            content = _extract_message_content(resp)
+            payload = _parse_json_payload(content)
+            if payload is not None:
                 payload.setdefault("components", [
                     payload.get("problem_statement", ""),
                     payload.get("target_user", ""),
@@ -92,15 +180,23 @@ def build_spc(need: str, model: str | None = None) -> Dict[str, Any]:
                     payload.get("evidence", ""),
                 ])
                 return payload
+            return {
+                "need": need,
+                "problem_statement": content.strip() or "Campus need captured for further refinement.",
+                "target_user": "",
+                "solution_concept": "",
+                "evidence": "",
+                "components": [content.strip() or "Campus need captured for further refinement."],
+            }
         except Exception as exc:
             raise RuntimeError(
                 f"AI generation failed while building SPC: {exc}. "
-                "Ensure OPENAI_API_KEY or ANTHROPIC_API_KEY is configured, valid, and has available quota."
+                "Ensure GROQ_API_KEY or ANTHROPIC_API_KEY is configured and valid."
             ) from exc
 
     raise RuntimeError(
         "No AI provider configured for SPC generation. "
-        "Set OPENAI_API_KEY or ANTHROPIC_API_KEY in your environment."
+        "Set GROQ_API_KEY or ANTHROPIC_API_KEY in your environment."
     )
 
 
@@ -165,10 +261,10 @@ def chat_spc(messages: list[dict[str, str]], spc: Dict[str, Any] | None = None, 
         except Exception as exc:
             return f"AI chat failed with Anthropic: {exc}"
 
-    # OpenAI ChatCompletion fallback only when Anthropic is not configured
-    if openai is not None and settings.OPENAI_API_KEY and not settings.ANTHROPIC_API_KEY:
+    # Groq chat fallback only when Anthropic is not configured
+    if groq is not None and settings.GROQ_API_KEY and not settings.ANTHROPIC_API_KEY:
         try:
-            client = openai.OpenAI(api_key=settings.OPENAI_API_KEY)
+            client = groq.Groq(api_key=settings.GROQ_API_KEY)
             system = (
                 "You are a helpful design assistant for student co-design workshops. "
                 "Help the user generate and refine a Structured Product Concept (SPC) from a campus need. "
@@ -190,21 +286,15 @@ def chat_spc(messages: list[dict[str, str]], spc: Dict[str, Any] | None = None, 
                     "content": f"Current SPC context: {format_spc_for_display(spc)}",
                 })
             resp = client.chat.completions.create(
-                model=model or settings.OPENAI_MODEL,
+                model=model or settings.GROQ_MODEL,
                 messages=formatted_messages,
                 max_tokens=400,
                 temperature=0.3,
             )
-            content = ""
-            if getattr(resp, "choices", None):
-                first = resp.choices[0]
-                if hasattr(first, 'message'):
-                    content = first.message.get('content','')
-                else:
-                    content = getattr(first, 'text', '')
+            content = _extract_message_content(resp)
             return content
         except Exception as exc:
-            return f"AI chat failed with OpenAI: {exc}"
+            return f"AI chat failed with Groq: {exc}"
 
 
     # Fallback behaviour when no Anthropic client is configured
