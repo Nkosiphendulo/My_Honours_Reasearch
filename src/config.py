@@ -18,7 +18,9 @@ class Settings:
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
     OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-3.5-turbo")
     GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-    GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
+    GROQ_MODEL = os.getenv("GROQ_MODEL", "qwen/qwen3.6-27b")
+    if GROQ_MODEL == "llama-3.1-8b-instant":
+        GROQ_MODEL = "qwen/qwen3.6-27b"
 
 
 settings = Settings()

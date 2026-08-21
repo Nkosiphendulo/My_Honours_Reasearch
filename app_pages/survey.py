@@ -2,7 +2,12 @@
 
 import streamlit as st
 
-from src.db import save_survey_responses
+from src.db import save_survey_responses, get_remembered_user
+
+current_user = get_remembered_user()
+if not current_user:
+    st.warning("Please log in or sign up on the Login page before leaving survey feedback.")
+    st.stop()
 
 st.title("Survey")
 st.write("Please share your feedback on the workshop experience.")
@@ -17,7 +22,8 @@ with st.form("survey_form"):
 
 if submitted:
     save_survey_responses(
-        st.session_state.participant_code,
+        current_user["user_id"],
+        current_user["username"],
         {
             "agency": agency,
             "usefulness": usefulness,

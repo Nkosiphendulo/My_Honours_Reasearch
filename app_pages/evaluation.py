@@ -2,7 +2,12 @@
 
 import streamlit as st
 
-from src.db import save_rubric_scores
+from src.db import save_rubric_scores, get_remembered_user
+
+current_user = get_remembered_user()
+if not current_user:
+    st.warning("Please log in or sign up on the Login page before evaluating concepts.")
+    st.stop()
 
 st.title("Evaluation")
 st.write("Score the concept using a short rubric.")
@@ -17,7 +22,8 @@ with st.form("evaluation_form"):
 
 if submitted:
     save_rubric_scores(
-        st.session_state.participant_code,
+        current_user["user_id"],
+        current_user["username"],
         {
             "clarity": clarity,
             "usefulness": usefulness,
