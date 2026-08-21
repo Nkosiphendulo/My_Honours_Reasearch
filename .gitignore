@@ -1,6 +1,8 @@
 __pycache__/
 .pytest_cache/
 .venv/
+myenv/
 .env
 .streamlit/secrets.toml
+.co_design_store.json
 *.pyc
