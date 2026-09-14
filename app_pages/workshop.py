@@ -12,7 +12,7 @@ from src.db import (
     save_spc_output,
     get_chat_history,
 )
-from src.llm import chat_spc, generate_final_spc, format_spc_for_display
+from src.llm import chat_spc, format_spc_for_display, parse_spc_block
 from src.tts import generate_speech
 
 current_user = get_remembered_user()
@@ -64,7 +64,21 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.subheader("AI Design Assistant")
+chat_header, clear_chat_column = st.columns([5, 1])
+with chat_header:
+    st.subheader("AI Design Assistant")
+with clear_chat_column:
+    if st.button("Clear chat", use_container_width=True):
+        st.session_state.chat_history = [
+            {
+                "role": "assistant",
+                "message": f"Hi {current_user['username']}! Tell me about a campus need and I will help you create an SPC.",
+            }
+        ]
+        save_chat_history(current_user["user_id"], st.session_state.chat_history)
+        st.session_state.spc = None
+        st.rerun()
+
 chat_text = st.chat_input("Tell the assistant about the campus need...", key="workshop_chat_input")
 
 if chat_text and chat_text.strip():
@@ -76,11 +90,49 @@ if chat_text and chat_text.strip():
         st.session_state.chat_history = [
             {"role": "user", "message": chat_text.strip()},
         ]
-        st.session_state.assistant_asked_generate = False
     st.session_state.chat_history.append({"role": "assistant", "message": assistant_reply})
-    # mark that assistant has asked whether to generate the SPC
-    if result.get("ready_for_generation") or result.get("asks_generate"):
-        st.session_state.assistant_asked_generate = True
+    if result.get("spc_confirmed"):
+        spc_reply = next(
+            (
+                entry.get("message", "")
+                for entry in reversed(st.session_state.chat_history[:-1])
+                if entry.get("role") == "assistant" and "[SPC_START]" in entry.get("message", "")
+            ),
+            "",
+        )
+        final = parse_spc_block(spc_reply)
+        if not final:
+            st.error("The API confirmation did not include a valid SPC block.")
+            final = None
+        try:
+            if final is None:
+                raise ValueError("Missing API-generated SPC block")
+            save_spc_output(
+                current_user["user_id"],
+                current_user["username"],
+                st.session_state.participant_code,
+                final.get("overview", ""),
+                final.get("overview_traced_from"),
+                final.get("target_users", ""),
+                final.get("target_users_traced_from"),
+                final.get("functional_requirements", []),
+                final.get("functional_requirements_traced_from"),
+                final.get("nonfunctional_requirements", []),
+                final.get("nonfunctional_requirements_traced_from"),
+                final.get("assumptions_constraints"),
+                final.get("assumptions_constraints_traced_from"),
+                final.get("expected_benefits"),
+                final.get("expected_benefits_traced_from"),
+            )
+            st.session_state.spc = final
+            log_prompt_response(
+                current_user["user_id"],
+                current_user["username"],
+                "Conversation-based SPC generation",
+                json.dumps({k: final.get(k) for k in ["overview", "target_users"]}),
+            )
+        except Exception as exc:
+            st.error(f"Could not save SPC: {exc}")
     save_chat_history(current_user["user_id"], st.session_state.chat_history)
 
 chat_box = st.container()
@@ -106,44 +158,6 @@ with chat_box:
     st.markdown('</div>', unsafe_allow_html=True)
 
 st.markdown("---")
-# Show generate button only when assistant has asked for generation
-if st.session_state.get("assistant_asked_generate"):
-    st.info("The assistant thinks it has enough detail to draft your SPC. Click to confirm generation.")
-    if st.button("Yes — generate my SPC now"):
-        # generate final SPC only after explicit confirmation
-        final = generate_final_spc(st.session_state.chat_history, current_user.get("username"), st.session_state.participant_code)
-        # persist the structured fields
-        try:
-            save_spc_output(
-                current_user["user_id"],
-                current_user["username"],
-                st.session_state.participant_code,
-                final.get("overview", ""),
-                final.get("overview_traced_from"),
-                final.get("target_users", ""),
-                final.get("target_users_traced_from"),
-                final.get("functional_requirements", []),
-                final.get("functional_requirements_traced_from"),
-                final.get("nonfunctional_requirements", []),
-                final.get("nonfunctional_requirements_traced_from"),
-                final.get("assumptions_constraints"),
-                final.get("assumptions_constraints_traced_from"),
-                final.get("expected_benefits"),
-                final.get("expected_benefits_traced_from"),
-            )
-            # store for display
-            st.session_state.spc = final
-            # log a summary prompt-response
-            log_prompt_response(
-                current_user["user_id"],
-                current_user["username"],
-                "Conversation-based SPC generation",
-                json.dumps({k: final.get(k) for k in ["overview", "target_users"]}),
-            )
-            st.success("Structured Product Concept generated and saved.")
-        except Exception as exc:
-            st.error(f"Could not save SPC: {exc}")
-
 if st.session_state.get("spc"):
     spc = st.session_state["spc"]
     st.subheader("Generated Structured Product Concept")

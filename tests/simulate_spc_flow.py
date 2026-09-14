@@ -6,7 +6,7 @@ whole exchange can fit within 10-15 minutes.
 """
 
 from time import perf_counter
-from src.llm import chat_spc, generate_final_spc
+from src.llm import chat_spc
 
 # Sample conversation: user and assistant turns
 messages = [
@@ -26,9 +26,10 @@ messages.append({"role": "assistant", "message": res.get("reply", "")})
 messages.append({"role": "user", "message": "Sounds good — please generate the SPC."})
 res = chat_spc(messages, username="student")
 messages.append({"role": "assistant", "message": res.get("reply", "")})
-# Simulate user confirmation
+# Simulate user confirmation through the API conversation
 messages.append({"role": "user", "message": "yes"})
-final = generate_final_spc(messages, username="student", participant_code="anon-1234")
+res = chat_spc(messages, username="student")
+messages.append({"role": "assistant", "message": res.get("reply", "")})
 end = perf_counter()
 
 # Estimate human timing: assume user reads and replies in 60-90s per user turn, assistant replies are immediate.
