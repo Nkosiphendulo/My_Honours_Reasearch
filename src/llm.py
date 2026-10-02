@@ -52,6 +52,37 @@ Set ready_for_generation and asks_generate to true only when the SPC block has b
 """.strip()
 
 
+_MEANINGLESS_VALUES = {
+    "test",
+    "none",
+    "n/a",
+    "na",
+    "unknown",
+    "asdf",
+    "asdfgh",
+}
+
+
+def is_meaningful_text(value: str, minimum_length: int = 8) -> bool:
+    """Reject blank, placeholder, repeated-character, and keyboard-smash input."""
+    text = re.sub(r"\s+", " ", (value or "").strip().lower())
+    if len(text) < minimum_length or text in _MEANINGLESS_VALUES:
+        return False
+
+    if re.search(r"(.)\1{2,}", text):
+        return False
+
+    letters = re.sub(r"[^a-z]", "", text)
+    # Character diversity is useful for short keyboard-smash strings, but
+    # normal sentences naturally reuse letters across many words.
+    if 6 <= len(letters) <= 20 and len(set(letters)) / len(letters) < 0.4:
+        return False
+    if len(letters) >= 6 and not re.search(r"[aeiou]", letters):
+        return False
+
+    return True
+
+
 def _repeats_previous_question(reply: str, messages: List[Dict[str, str]]) -> bool:
     """Reject an API reply that repeats an earlier assistant question verbatim."""
     normalise = lambda text: re.sub(r"\s+", " ", text.strip().lower())
@@ -104,7 +135,8 @@ def _groq_chat_spc(messages: List[Dict[str, str]]) -> Optional[Dict[str, Any]]:
                 "model": settings.GROQ_MODEL,
                 "messages": request_messages,
                 "temperature": 0.3,
-                "max_tokens": 8000,
+                "max_tokens": 1000,
+                "reasoning_effort": "none",
             }
             if settings.GROQ_MODEL.startswith("qwen/"):
                 request_options["reasoning_format"] = "hidden"
@@ -184,8 +216,8 @@ def chat_spc(messages: List[Dict[str, str]], username: Optional[str] = None) -> 
 
 
 def parse_spc_block(reply: str) -> Dict[str, Any] | None:
-    """Parse the four-field SPC block returned by the API."""
-    match = re.search(
+    """Parse the legacy 4-field block and the new 9-field SPC format."""
+    legacy_match = re.search(
         r"\[SPC_START\]\s*"
         r"Problem statement:\s*(.*?)\s*"
         r"Target users:\s*(.*?)\s*"
@@ -195,62 +227,282 @@ def parse_spc_block(reply: str) -> Dict[str, Any] | None:
         reply,
         flags=re.S,
     )
-    if not match:
+    if legacy_match:
+        problem, target_users, solution, evidence = (part.strip() for part in legacy_match.groups())
+        return {
+            "problem_statement": problem,
+            "target_users": target_users,
+            "user_need": "",
+            "proposed_concept": solution,
+            "functional_requirements": [{"id": "SC-1", "text": solution}],
+            "constraints": "",
+            "expected_benefits": evidence,
+            "risks_assumptions": "",
+            "recommended_next_step": "",
+        }
+
+    new_match = re.search(
+        r"\[SPC_START\]\s*"
+        r"Problem statement:\s*(.*?)\s*"
+        r"Target users:\s*(.*?)\s*"
+        r"User need:\s*(.*?)\s*"
+        r"Proposed concept:\s*(.*?)\s*"
+        r"Functional requirements:\s*(.*?)\s*"
+        r"Constraints:\s*(.*?)\s*"
+        r"Expected benefits:\s*(.*?)\s*"
+        r"Risks and assumptions:\s*(.*?)\s*"
+        r"Recommended next step:\s*(.*?)\s*"
+        r"\[SPC_END\]",
+        reply,
+        flags=re.S,
+    )
+    if not new_match:
         return {}
 
-    problem, target_users, solution, evidence = (part.strip() for part in match.groups())
+    (
+        problem_statement,
+        target_users,
+        user_need,
+        proposed_concept,
+        functional_requirements,
+        constraints,
+        expected_benefits,
+        risks_assumptions,
+        recommended_next_step,
+    ) = (part.strip() for part in new_match.groups())
+
+    fr_items = []
+    if functional_requirements:
+        for index, item in enumerate(re.split(r"\n+|-\s*", functional_requirements), start=1):
+            text = item.strip()
+            if text:
+                fr_items.append({"id": f"FR-{index}", "text": text})
+
     return {
-        "overview": problem,
+        "problem_statement": problem_statement,
         "target_users": target_users,
-        "functional_requirements": [{"id": "SC-1", "text": solution}],
-        "nonfunctional_requirements": [],
-        "assumptions_constraints": "",
-        "expected_benefits": evidence,
+        "user_need": user_need,
+        "proposed_concept": proposed_concept,
+        "functional_requirements": fr_items or [{"id": "FR-1", "text": proposed_concept}],
+        "constraints": constraints,
+        "expected_benefits": expected_benefits,
+        "risks_assumptions": risks_assumptions,
+        "recommended_next_step": recommended_next_step,
     }
 
 
 def format_spc_for_display(spc: Dict[str, Any]) -> str:
-    """Render either legacy or new SPC structure as a readable display string.
-
-    Supports old keys (`need`, `problem_statement`, `target_user`, `solution_concept`, `evidence`)
-    and the four-field SPC block returned by the API.
-    """
+    """Render legacy or current SPC data as consistently separated Markdown sections."""
     if not spc:
         return ""
 
-    # New-style final SPC
-    if "overview" in spc or "functional_requirements" in spc:
-        parts = []
-        if spc.get("overview"):
-            parts.append(f"Overview: {spc.get('overview')}")
-        if spc.get("target_users"):
-            parts.append(f"Target users: {spc.get('target_users')}")
-        if spc.get("functional_requirements"):
-            frs = spc.get("functional_requirements")
-            if isinstance(frs, list):
-                parts.append("Functional requirements:")
-                for fr in frs:
-                    if isinstance(fr, dict):
-                        parts.append(f"- {fr.get('id','')}: {fr.get('text','')}")
-                    else:
-                        parts.append(f"- {str(fr)}")
-        if spc.get("nonfunctional_requirements"):
-            nfrs = spc.get("nonfunctional_requirements")
-            parts.append("Non-functional requirements:")
-            for n in nfrs:
-                parts.append(f"- {n.get('id','')}: {n.get('text','')}")
-        if spc.get("assumptions_constraints"):
-            parts.append(f"Assumptions & Constraints: {spc.get('assumptions_constraints')}")
-        if spc.get("expected_benefits"):
-            parts.append(f"Expected benefits: {spc.get('expected_benefits')}")
-        return "\n".join(parts)
+    normalized = {
+        "problem_statement": spc.get("problem_statement") or spc.get("overview") or spc.get("problem"),
+        "target_users": spc.get("target_users") or spc.get("target_user") or spc.get("audience"),
+        "user_need": spc.get("user_need") or spc.get("need") or spc.get("user_need_summary"),
+        "proposed_concept": spc.get("proposed_concept") or spc.get("solution_concept") or spc.get("solution"),
+        "functional_requirements": spc.get("functional_requirements") or [],
+        "constraints": spc.get("constraints") or spc.get("assumptions_constraints") or "",
+        "expected_benefits": spc.get("expected_benefits") or spc.get("evidence") or "",
+        "risks_assumptions": spc.get("risks_assumptions") or spc.get("risks") or "",
+        "recommended_next_step": spc.get("recommended_next_step") or spc.get("next_step") or "",
+    }
 
-    # Legacy-style SPC
-    lines = [
-        f"Need: {spc.get('need', '')}",
-        f"Problem: {spc.get('problem_statement', '')}",
-        f"Target user: {spc.get('target_user', '')}",
-        f"Solution: {spc.get('solution_concept', '')}",
-        f"Evidence: {spc.get('evidence', '')}",
+    requirements = normalized["functional_requirements"]
+    if isinstance(requirements, str):
+        requirement_items = [item.strip() for item in re.split(r"\n+", requirements) if item.strip()]
+    else:
+        requirement_items = []
+        for requirement in requirements:
+            if isinstance(requirement, dict):
+                text = requirement.get("text") or requirement.get("requirement") or ""
+            else:
+                text = str(requirement)
+            if text.strip():
+                requirement_items.append(text.strip())
+
+    sections = [
+        ("Problem statement", normalized["problem_statement"]),
+        ("Target users", normalized["target_users"]),
+        ("User need", normalized["user_need"]),
+        ("Proposed concept", normalized["proposed_concept"]),
+        (
+            "Functional requirements",
+            "\n".join(f"- {item}" for item in requirement_items) or "Not provided",
+        ),
+        ("Constraints", normalized["constraints"]),
+        ("Expected benefits", normalized["expected_benefits"]),
+        ("Risks and assumptions", normalized["risks_assumptions"]),
+        ("Recommended next step", normalized["recommended_next_step"]),
     ]
-    return "\n".join(lines)
+    return "\n\n".join(
+        f"**{label}**\n\n{value or 'Not provided'}"
+        for label, value in sections
+    )
+
+
+def _groq_json_call(system_prompt: str, user_payload: Dict[str, Any], *, max_tokens: int = 800) -> Optional[Dict[str, Any]]:
+    """Call Groq with a compact JSON prompt and return a parsed object."""
+    if Groq is None:
+        return None
+    if not settings.GROQ_API_KEY:
+        return None
+
+    try:
+        client = Groq(api_key=settings.GROQ_API_KEY)
+        response = client.chat.completions.create(
+            model=settings.GROQ_MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
+            ],
+            temperature=0.3,
+            max_tokens=max_tokens,
+            response_format={"type": "json_object"},
+        )
+        content = response.choices[0].message.content or "{}"
+        payload = json.loads(content)
+        if isinstance(payload, dict):
+            return payload
+    except Exception:
+        return None
+    return None
+
+
+def generate_clarification_questions(problem_statement: str, target_users: str) -> List[str]:
+    """Create up to two focused follow-up questions for the bounded wizard."""
+    fallback_questions = [
+        "What is the main user pain point you want to solve?",
+        "Who is most affected by this issue?",
+    ]
+
+    result = _groq_json_call(
+        "You are a campus co-design facilitator. Return JSON only with a 'clarification_questions' list of up to two short, specific questions. Keep them grounded in the participant's problem and affected users.",
+        {
+            "problem_statement": problem_statement,
+            "target_users": target_users,
+        },
+    )
+    if not result:
+        return fallback_questions
+
+    questions = result.get("clarification_questions") or []
+    cleaned = [str(item).strip() for item in questions[:2] if str(item).strip()]
+    if cleaned:
+        return cleaned
+    return fallback_questions
+
+
+def generate_concept_options(
+    problem_statement: str,
+    target_users: str,
+    clarification_answers: List[str],
+    user_need: str,
+    constraints: str,
+    success_criteria: str,
+) -> List[Dict[str, str]]:
+    """Generate up to two bounded solution alternatives in compact structured JSON."""
+    fallback_options = [
+        {
+            "title": "Low-friction campus service",
+            "summary": "Create a simple service that helps affected students identify the fastest, least disruptive path to a workable solution using existing campus resources.",
+        },
+        {
+            "title": "Student-led pilot concept",
+            "summary": "Run a small pilot with a defined user group to test demand, gather feedback, and refine the idea before wider rollout.",
+        },
+    ]
+
+    result = _groq_json_call(
+        "You are a campus co-design facilitator. Return JSON only with a 'concept_options' array of 1 to 2 objects. Each object must include 'title' and 'summary' and stay grounded in the user's need and constraints.",
+        {
+            "problem_statement": problem_statement,
+            "target_users": target_users,
+            "clarification_answers": clarification_answers,
+            "user_need": user_need,
+            "constraints": constraints,
+            "success_criteria": success_criteria,
+        },
+    )
+    if not result:
+        return fallback_options
+
+    raw_options = result.get("concept_options") or []
+    options: List[Dict[str, str]] = []
+    for option in raw_options[:2]:
+        if isinstance(option, dict):
+            title = str(option.get("title") or "Concept option").strip()
+            summary = str(option.get("summary") or option.get("concept") or "").strip()
+            if title and summary:
+                options.append({"title": title, "summary": summary})
+    if options:
+        return options
+    return fallback_options
+
+
+def validate_user_inputs(
+    problem_statement: str,
+    target_users: str,
+    clarification_answers: List[str],
+    user_need: str,
+    constraints: str,
+    success_criteria: str,
+) -> Dict[str, Any]:
+    """Ask the LLM to validate and refine the user inputs before final SPC generation."""
+    result = _groq_json_call(
+        "You are a careful proofreader and co-design facilitator. Validate whether the user's inputs are coherent and useful for a campus product concept. Return JSON only with these keys: validation_ok, issue_summary, refined_problem_statement, refined_target_users, refined_user_need, refined_constraints, refined_success_criteria. Correct spelling, grammar, and readability while preserving exactly the user's intended meaning. You may paraphrase only when the replacement is strictly equivalent. Never add, remove, narrow, or broaden factual claims, affected groups, causes, frequency, severity, constraints, or success criteria. Preserve uncertainty and qualifiers. Do not turn suggestions or assumptions into facts. If any field is ambiguous or you cannot confidently preserve its meaning, return that field unchanged and explain what needs clarification in issue_summary. Do not replace missing user information with generic content. Set validation_ok to false only when the information is too unclear or contradictory to proceed.",
+        {
+            "problem_statement": problem_statement,
+            "target_users": target_users,
+            "clarification_answers": clarification_answers,
+            "user_need": user_need,
+            "constraints": constraints,
+            "success_criteria": success_criteria,
+        },
+    )
+
+    if not result:
+        fields = {
+            "problem statement": problem_statement,
+            "target users": target_users,
+            "user need": user_need,
+        }
+        invalid_fields = [
+            name for name, value in fields.items()
+            if not is_meaningful_text(value, minimum_length=3 if name == "target users" else 8)
+        ]
+        if invalid_fields:
+            return {
+                "validation_ok": False,
+                "issue_summary": (
+                    "Please provide clearer information for: "
+                    + ", ".join(invalid_fields)
+                    + ". Avoid random characters or placeholder text."
+                ),
+                "refined_problem_statement": (problem_statement or "").strip(),
+                "refined_target_users": (target_users or "").strip(),
+                "refined_user_need": (user_need or "").strip(),
+                "refined_constraints": (constraints or "").strip(),
+                "refined_success_criteria": (success_criteria or "").strip(),
+            }
+
+        return {
+            "validation_ok": True,
+            "issue_summary": "The API was unavailable, so the original information was retained.",
+            "refined_problem_statement": problem_statement.strip(),
+            "refined_target_users": target_users.strip(),
+            "refined_user_need": user_need.strip(),
+            "refined_constraints": (constraints or "").strip(),
+            "refined_success_criteria": (success_criteria or "").strip(),
+        }
+
+    validation_ok = bool(result.get("validation_ok", False))
+    return {
+        "validation_ok": validation_ok,
+        "issue_summary": str(result.get("issue_summary") or "Inputs were reviewed.").strip(),
+        "refined_problem_statement": str(result.get("refined_problem_statement") or problem_statement or "").strip(),
+        "refined_target_users": str(result.get("refined_target_users") or target_users or "").strip(),
+        "refined_user_need": str(result.get("refined_user_need") or user_need or "").strip(),
+        "refined_constraints": str(result.get("refined_constraints") or constraints or "").strip(),
+        "refined_success_criteria": str(result.get("refined_success_criteria") or success_criteria or "").strip(),
+    }

@@ -273,36 +273,64 @@ def save_spc_output(
     user_id: str,
     username: str,
     participant_code: str,
-    overview: str,
-    overview_traced_from: str | None,
-    target_users: str,
-    target_users_traced_from: str | None,
-    functional_requirements: list[dict] | list[str],
-    functional_requirements_traced_from: str | None,
-    nonfunctional_requirements: list[dict] | list[str],
-    nonfunctional_requirements_traced_from: str | None,
-    assumptions_constraints: str | None,
-    assumptions_constraints_traced_from: str | None,
-    expected_benefits: str | None,
-    expected_benefits_traced_from: str | None,
+    *args,
+    problem_statement: str | None = None,
+    target_users: str | None = None,
+    user_need: str | None = None,
+    proposed_concept: str | None = None,
+    functional_requirements: list[dict] | list[str] | None = None,
+    constraints: str | None = None,
+    expected_benefits: str | None = None,
+    risks_assumptions: str | None = None,
+    recommended_next_step: str | None = None,
+    **kwargs,
 ) -> Dict[str, Any]:
-    """Save SPC outputs as discrete fields matching `spc_outputs` table."""
+    """Save SPC outputs using the current 9-field schema while keeping legacy aliases for older callers."""
+    if args:
+        if len(args) == 9 and problem_statement is None:
+            (
+                problem_statement,
+                target_users,
+                user_need,
+                proposed_concept,
+                functional_requirements,
+                constraints,
+                expected_benefits,
+                risks_assumptions,
+                recommended_next_step,
+            ) = args
+        elif len(args) >= 12 and problem_statement is None:
+            legacy_overview, _, legacy_target_users, _, legacy_functional_requirements, _, legacy_nonfunctional_requirements, _, legacy_assumptions_constraints, _, legacy_expected_benefits, _ = args[:12]
+            problem_statement = legacy_overview
+            target_users = legacy_target_users
+            proposed_concept = legacy_functional_requirements[0].get("text", str(legacy_functional_requirements[0])) if isinstance(legacy_functional_requirements, list) and legacy_functional_requirements else ""
+            functional_requirements = legacy_functional_requirements
+            constraints = legacy_assumptions_constraints
+            expected_benefits = legacy_expected_benefits
+            user_need = ""
+            risks_assumptions = ""
+            recommended_next_step = ""
+
+    if functional_requirements is None:
+        functional_requirements = []
+
     payload = {
         "user_id": user_id,
         "username": username,
         "participant_code": participant_code,
-        "overview": _sanitize_text(overview),
-        "overview_traced_from": _sanitize_text(overview_traced_from),
+        "problem_statement": _sanitize_text(problem_statement),
         "target_users": _sanitize_text(target_users),
-        "target_users_traced_from": _sanitize_text(target_users_traced_from),
+        "user_need": _sanitize_text(user_need),
+        "proposed_concept": _sanitize_text(proposed_concept),
         "functional_requirements": functional_requirements,
-        "functional_requirements_traced_from": _sanitize_text(functional_requirements_traced_from),
-        "nonfunctional_requirements": nonfunctional_requirements,
-        "nonfunctional_requirements_traced_from": _sanitize_text(nonfunctional_requirements_traced_from),
-        "assumptions_constraints": _sanitize_text(assumptions_constraints),
-        "assumptions_constraints_traced_from": _sanitize_text(assumptions_constraints_traced_from),
+        "constraints": _sanitize_text(constraints),
         "expected_benefits": _sanitize_text(expected_benefits),
-        "expected_benefits_traced_from": _sanitize_text(expected_benefits_traced_from),
+        "risks_assumptions": _sanitize_text(risks_assumptions),
+        "recommended_next_step": _sanitize_text(recommended_next_step),
+        "overview": _sanitize_text(problem_statement),
+        "target_user": _sanitize_text(target_users),
+        "solution_concept": _sanitize_text(proposed_concept),
+        "evidence": _sanitize_text(expected_benefits),
     }
     return _persist("spc_outputs", payload)
 
