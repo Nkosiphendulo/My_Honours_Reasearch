@@ -122,50 +122,51 @@ elif state["stage"] == 2:
 
 elif state["stage"] == 3:
     st.subheader("Stage 3 — Requirements")
-    with st.form("stage_3_form"):
-        state["user_need"] = st.text_area(
-            "What user need or opportunity matters most here?",
-            value=state["user_need"],
-            height=100,
-        )
-        state["constraints"] = st.text_area(
-            "What constraints, limits, or realities should the solution respect?",
-            value=state["constraints"],
-            height=100,
-        )
-        state["success_criteria"] = st.text_area(
-            "What would a successful solution look like from the user’s perspective?",
-            value=state["success_criteria"],
-            height=100,
-        )
-        submitted = st.form_submit_button("Continue to Stage 4")
-        if submitted:
-            validation = validate_user_inputs(
-                state["problem_statement"],
-                state["target_users"],
-                state["clarification_answers"],
-                state["user_need"],
-                state["constraints"],
-                state["success_criteria"],
+    if not state.get("input_review"):
+        with st.form("stage_3_form"):
+            state["user_need"] = st.text_area(
+                "What user need or opportunity matters most here?",
+                value=state["user_need"],
+                height=100,
             )
-            if validation.get("validation_ok"):
-                state["input_review"] = {
-                    "problem_statement": validation.get("refined_problem_statement") or state["problem_statement"],
-                    "target_users": validation.get("refined_target_users") or state["target_users"],
-                    "user_need": validation.get("refined_user_need") or state["user_need"],
-                    "constraints": validation.get("refined_constraints") or state["constraints"],
-                    "success_criteria": validation.get("refined_success_criteria") or state["success_criteria"],
-                }
-                st.rerun()
-            else:
-                st.warning(
-                    validation.get("issue_summary")
-                    or "The information provided needs more clarity before continuing. Please refine the problem, users, and goals."
+            state["constraints"] = st.text_area(
+                "What constraints, limits, or realities should the solution respect?",
+                value=state["constraints"],
+                height=100,
+            )
+            state["success_criteria"] = st.text_area(
+                "What would a successful solution look like from the user’s perspective?",
+                value=state["success_criteria"],
+                height=100,
+            )
+            submitted = st.form_submit_button("Review wording")
+            if submitted:
+                validation = validate_user_inputs(
+                    state["problem_statement"],
+                    state["target_users"],
+                    state["clarification_answers"],
+                    state["user_need"],
+                    state["constraints"],
+                    state["success_criteria"],
                 )
+                if validation.get("validation_ok"):
+                    state["input_review"] = {
+                        "problem_statement": validation.get("refined_problem_statement") or state["problem_statement"],
+                        "target_users": validation.get("refined_target_users") or state["target_users"],
+                        "user_need": validation.get("refined_user_need") or state["user_need"],
+                        "constraints": validation.get("refined_constraints") or state["constraints"],
+                        "success_criteria": validation.get("refined_success_criteria") or state["success_criteria"],
+                    }
+                    st.rerun()
+                else:
+                    st.warning(
+                        validation.get("issue_summary")
+                        or "The information provided needs more clarity before continuing. Please refine the problem, users, and goals."
+                    )
 
     if state.get("input_review"):
         st.markdown("#### Review wording suggestions")
-        st.caption("Compare the suggested wording with your original. Accept it only if it keeps your meaning; otherwise keep your wording or edit it above.")
+        st.caption("Compare the suggested wording with your original. Accept it only if it keeps your meaning.")
         review_fields = [
             ("Problem statement", "problem_statement"),
             ("Target users", "target_users"),
@@ -182,7 +183,7 @@ elif state["stage"] == 3:
                 st.markdown(f"**Suggested wording: {label}**")
                 st.write(state["input_review"].get(key) or "Not provided")
 
-        accept_col, keep_col = st.columns(2)
+        accept_col, keep_col, edit_col = st.columns(3)
         with accept_col:
             if st.button("Accept suggestions and continue", type="primary", key="accept_input_suggestions"):
                 for key, value in state["input_review"].items():
@@ -194,6 +195,10 @@ elif state["stage"] == 3:
             if st.button("Keep my wording and continue", key="keep_original_input"):
                 state["input_review"] = None
                 state["stage"] = 4
+                st.rerun()
+        with edit_col:
+            if st.button("Edit my answers", key="edit_original_input"):
+                state["input_review"] = None
                 st.rerun()
 
 elif state["stage"] == 4:
